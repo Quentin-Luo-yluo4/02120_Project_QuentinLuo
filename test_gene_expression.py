@@ -2,6 +2,8 @@
 
 import unittest
 
+import numpy as np
+
 from gene_expression import (
     ACTIVATOR,
     REPRESSOR,
@@ -48,6 +50,14 @@ class TestTranscriptionRate(unittest.TestCase):
             transcription_rate([(1, K, N, REPRESSOR)], r_max=-1, r_basal=-2)
         with self.assertRaises(ValueError):
             transcription_rate([])
+        with self.assertRaises(ValueError):
+            hill(np.array([1.0, -1.0]), K, N, REPRESSOR)
+
+    def test_array_input_matches_scalar(self):
+        xs = np.array([0, K, 1000])
+        rates = transcription_rate([(xs, K, N, REPRESSOR)])
+        expected = [transcription_rate([(x, K, N, REPRESSOR)]) for x in xs]
+        np.testing.assert_allclose(rates, expected)
 
 
 class TestMrnaAndProtein(unittest.TestCase):

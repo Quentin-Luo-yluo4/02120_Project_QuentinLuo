@@ -7,7 +7,12 @@ Level 1 (TF regulation):
 
 Level 2 (mRNA):     dm/dt = r(x) - gamma_m * m
 Level 3 (protein):  dp/dt = beta * m - gamma_p * p
+
+The Level 1 functions also accept numpy arrays for x, so a whole curve
+(e.g. r over 1000 concentrations, for plotting) is computed in one call.
 """
+
+import numpy as np
 
 R_MAX = 1.0
 R_BASAL = 0.001
@@ -16,13 +21,18 @@ REPRESSOR = "repressor"
 ACTIVATOR = "activator"
 
 
+def _any(condition):
+    """True if condition holds; for an array, if it holds for any element."""
+    return condition.any() if isinstance(condition, np.ndarray) else condition
+
+
 def _check_nonnegative(name, value):
-    if value < 0:
+    if _any(value < 0):
         raise ValueError(f"{name} must be non-negative, got {value}")
 
 
 def _check_positive(name, value):
-    if value <= 0:
+    if _any(value <= 0):
         raise ValueError(f"{name} must be positive, got {value}")
 
 
