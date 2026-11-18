@@ -133,6 +133,58 @@ class TestConnection(unittest.TestCase):
         np.testing.assert_allclose(data["fano"], fanos, rtol=1e-12)
 
 
+class TestTimeCourse(unittest.TestCase):
+    """/api/time-course: the data behind the graphing page."""
+
+    BODY = {"r": 1.0, "gamma_m": 0.5, "beta": 10.0, "gamma_p": 0.05,
+            "t_max": 100.0, "seed": 3, "n_points": 201}
+
+    def test_trajectory_matches_gillespie_module(self):
+        data = post_ok(self, "/api/time-course", self.BODY)
+        b = self.BODY
+        t, m, p = gillespie(b["r"], b["gamma_m"], b["beta"], b["gamma_p"], b["t_max"],
+                            seed=b["seed"], n_points=b["n_points"])
+        self.assertEqual(data["t"], t.tolist())
+        self.assertEqual(data["m"], m.tolist())
+        self.assertEqual(data["p"], p.tolist())
+
+    def test_deterministic_curve_matches_exact_solution(self):
+        data = post_ok(self, "/api/time-course", self.BODY)
+        t = np.array(data["t"])
+        gm, gp, r, beta = 0.5, 0.05, 1.0, 10.0
+        m_exact = r / gm * (1 - np.exp(-gm * t))
+        p_exact = r * beta / (gm * gp) * (
+            1 - (gp * np.exp(-gm * t) - gm * np.exp(-gp * t)) / (gp - gm))
+        np.testing.assert_allclose(data["det_m"], m_exact, rtol=1e-6, atol=1e-9)
+        np.testing.assert_allclose(data["det_p"], p_exact, rtol=1e-6, atol=1e-6)
+        self.assertAlmostEqual(data["theory"]["mean_p"], 400.0)
+        self.assertAlmostEqual(data["theory"]["fano_p"], 1 + 10 / 0.55)
+
+    def test_feedback_settles_at_self_consistent_level(self):
+        body = dict(self.BODY, t_max=400.0,
+                    autorepression={"K": 100.0, "n": 2.0, "r_basal": 0.0})
+        data = post_ok(self, "/api/time-course", body)
+        self.assertNotIn("theory", data)
+        p = data["det_p"][-1]
+        r_of_p = transcription_rate([(p, 100.0, 2.0, REPRESSOR)], r_max=1.0, r_basal=0.0)
+        # at the fixed point p = beta * r(p) / (gamma_m * gamma_p)
+        self.assertAlmostEqual(p, 10.0 * r_of_p / (0.5 * 0.05), delta=0.01 * p)
+        self.assertLess(p, 400.0)  # repression lowers the level
+
+    def test_bad_values_give_400(self):
+        for label, change in {"negative r": {"r": -1}, "zero t_max": {"t_max": 0},
+                              "basal above r": {"autorepression":
+                                                {"K": 1, "n": 2, "r_basal": 5}}}.items():
+            with self.subTest(label):
+                response = client.post("/api/time-course", json=dict(self.BODY, **change))
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("error", response.json())
+
+    def test_zero_degradation_has_no_theory(self):
+        data = post_ok(self, "/api/time-course", dict(self.BODY, gamma_p=0))
+        self.assertNotIn("theory", data)
+
+
 class TestBehaviour(unittest.TestCase):
     """Correct answers, error handling, and limits."""
 
@@ -253,10 +305,11 @@ class TestBehaviour(unittest.TestCase):
                 "t_max": 10, "n_points": MAX_TRAJECTORY_POINTS + 1}
         self.assertEqual(client.post("/api/gillespie", json=body).status_code, 422)
 
-    def test_home_redirects_to_docs(self):
-        response = client.get("/", follow_redirects=False)
-        self.assertEqual(response.status_code, 307)
-        self.assertEqual(response.headers["location"], "/docs")
+    def test_home_serves_graphing_page(self):
+        response = client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers["content-type"])
+        self.assertIn("/api/time-course", response.text)  # the page calls this endpoint
         self.assertEqual(client.get("/docs").status_code, 200)
 
     def test_unknown_route_and_wrong_method(self):
@@ -266,7 +319,8 @@ class TestBehaviour(unittest.TestCase):
     def test_all_endpoints_listed(self):
         paths = set(client.get("/openapi.json").json()["paths"])
         self.assertEqual(paths, {"/api/health", "/api/steady-state", "/api/rate-curve",
-                                 "/api/gillespie", "/api/gillespie-stats", "/api/cascade"})
+                                 "/api/gillespie", "/api/gillespie-stats", "/api/cascade",
+                                 "/api/time-course"})
 
 
 def _free_port():
@@ -315,6 +369,15 @@ class TestLiveServer(unittest.TestCase):
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as err:
             return err.code, json.loads(err.read())
+
+    def test_page_and_time_course_over_http(self):
+        with urllib.request.urlopen(self.base + "/", timeout=60) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn(b"/api/time-course", response.read())
+        status, data = self.request("/api/time-course", {
+            "r": 1, "gamma_m": 0.5, "beta": 10, "gamma_p": 0.05, "t_max": 300, "seed": 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["p"]), 1001)
 
     def test_health_over_http(self):
         status, data = self.request("/api/health")

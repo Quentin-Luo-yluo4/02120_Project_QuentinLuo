@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gene Expression Grapher</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.0/plotly.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --border: #dfe2e7; --text: #1d2330; --muted: #6b7280;
+    --accent: #2d70b3; --protein: #2d70b3; --mrna: #c74440; --error: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181e; --panel: #1d2129; --border: #2e3440; --text: #e6e8ec; --muted: #9aa3b2;
+      --accent: #6aa7e8; --protein: #6aa7e8; --mrna: #ef7c78; --error: #f38b80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: flex; height: 100vh; }
+  aside { width: 320px; flex: none; background: var(--panel); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 14px 0; }
+  h1 { font-size: 16px; margin: 0 16px 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 16px 12px; }
+  .row { padding: 10px 16px; border-top: 1px solid var(--border); }
+  .row .top { display: flex; align-items: baseline; gap: 6px; }
+  .row label { font-family: "Times New Roman", serif; font-style: italic; font-size: 18px; min-width: 2.2em; }
+  .row .eq { color: var(--muted); }
+  .row input[type=number] { flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: 3px 6px;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+  .row input[type=number]:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .row input[type=range] { width: 100%; margin-top: 6px; accent-color: var(--accent); }
+  .row .hint { color: var(--muted); font-size: 12px; }
+  .row.bad input[type=number] { border-color: var(--error); }
+  .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .feedback[hidden] { display: none; }
+  .buttons { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 4px; cursor: pointer;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+  button:hover { border-color: var(--accent); }
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #graph { flex: 1; min-height: 0; }
+  .readout { padding: 8px 16px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted);
+    display: flex; gap: 18px; flex-wrap: wrap; min-height: 36px; align-items: center; }
+  .readout b { color: var(--text); font-weight: 600; }
+  .readout .err { color: var(--error); }
+  @media (max-width: 760px) {
+    .app { flex-direction: column; height: auto; }
+    aside { width: 100%; border-right: 0; border-bottom: 1px solid var(--border); }
+    #graph { height: 60vh; flex: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>Gene expression grapher</h1>
+    <p class="sub">Type a value or drag a slider. The graph updates as you go.</p>
+    <div id="params"></div>
+    <div class="row">
+      <label class="toggle" style="font-style:normal;font-family:inherit;font-size:14px">
+        <input type="checkbox" id="fb"> Protein represses its own gene
+      </label>
+    </div>
+    <div id="fbparams" class="feedback" hidden></div>
+    <div class="buttons">
+      <button id="reroll" title="Run the stochastic simulation again with new random numbers">New random run</button>
+      <button id="reset">Reset values</button>
+    </div>
+  </aside>
+  <main>
+    <div id="graph"></div>
+    <div class="readout" id="readout"></div>
+  </main>
+</div>
+<script>
+// name, label, default, slider min, slider max, slider step, hint, check
+const PARAMS = [
+  ["r",       "r",   1,    0, 5,    0.05,  "transcription rate (mRNA made per unit time)"],
+  ["gamma_m", "γₘ",  0.5,  0.01, 2, 0.01,  "mRNA degradation rate"],
+  ["beta",    "β",   10,   0, 50,   0.5,   "translation rate (protein per mRNA per unit time)"],
+  ["gamma_p", "γₚ",  0.05, 0.005, 0.5, 0.005, "protein degradation rate"],
+  ["t_max",   "t",   300,  10, 2000, 10,   "how long to simulate"],
+];
+const FB_PARAMS = [
+  ["K",       "K",       200, 1, 1000, 1,   "protein level giving half repression"],
+  ["n",       "n",       2,   0.5, 6, 0.1,  "Hill coefficient (steepness)"],
+  ["r_basal", "r₀",      0,   0, 1, 0.01,   "leaky rate at full repression (must be < r)"],
+];
+
+const inputs = {};
+function buildRows(list, container) {
+  for (const [name, label, def, lo, hi, step, hint] of list) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<div class="top"><label for="in-${name}">${label}</label><span class="eq">=</span>
+      <input type="number" id="in-${name}" value="${def}" step="any"></div>
+      <input type="range" min="${lo}" max="${hi}" step="${step}" value="${def}" aria-label="${label} slider">
+      <div class="hint">${hint}</div>`;
+    container.appendChild(row);
+    const num = row.querySelector("input[type=number]");
+    const slider = row.querySelector("input[type=range]");
+    num.addEventListener("input", () => { slider.value = num.value; schedule(); });
+    slider.addEventListener("input", () => { num.value = slider.value; schedule(); });
+    inputs[name] = { num, slider, row, def };
+  }
+}
+buildRows(PARAMS, document.getElementById("params"));
+buildRows(FB_PARAMS, document.getElementById("fbparams"));
+
+const fb = document.getElementById("fb");
+fb.addEventListener("change", () => {
+  document.getElementById("fbparams").hidden = !fb.checked;
+  schedule();
+});
+let seed = 1;
+document.getElementById("reroll").addEventListener("click", () => { seed = Math.floor(Math.random() * 1e9); schedule(0); });
+document.getElementById("reset").addEventListener("click", () => {
+  for (const k in inputs) { inputs[k].num.value = inputs[k].def; inputs[k].slider.value = inputs[k].def; }
+  schedule(0);
+});
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const readout = document.getElementById("readout");
+
+let timer = null, requestId = 0;
+function schedule(delay = 200) { clearTimeout(timer); timer = setTimeout(update, delay); }
+
+function value(name) {
+  const t = inputs[name].num.value.trim();
+  return t === "" ? NaN : Number(t);
+}
+
+async function update() {
+  const body = { seed, n_points: 1001 };
+  let ok = true;
+  const used = PARAMS.map(p => p[0]).concat(fb.checked ? FB_PARAMS.map(p => p[0]) : []);
+  for (const k in inputs) inputs[k].row.classList.remove("bad");
+  for (const name of used) {
+    if (!Number.isFinite(value(name))) { inputs[name].row.classList.add("bad"); ok = false; }
+  }
+  if (!ok) { readout.innerHTML = `<span class="err">Enter a number in every box.</span>`; return; }
+  for (const [name] of PARAMS) body[name] = value(name);
+  if (fb.checked) body.autorepression = { K: value("K"), n: value("n"), r_basal: value("r_basal") };
+
+  const id = ++requestId;
+  let res, data;
+  try {
+    res = await fetch("/api/time-course", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    data = await res.json();
+  } catch (e) {
+    if (id === requestId) readout.innerHTML = `<span class="err">Could not reach the server.</span>`;
+    return;
+  }
+  if (id !== requestId) return; // a newer request has been sent; ignore this one
+  if (!res.ok) {
+    const msg = data.error || (data.detail && data.detail[0] && data.detail[0].msg) || "Invalid input";
+    readout.innerHTML = `<span class="err">${msg}</span>`;
+    return;
+  }
+  draw(data, body);
+}
+
+function draw(d, body) {
+  const protein = css("--protein"), mrna = css("--mrna"), text = css("--text"),
+        muted = css("--muted"), grid = css("--border");
+  const traces = [
+    { x: d.t, y: d.p, name: "protein p (simulated)", mode: "lines", line: { color: protein, width: 1.2, shape: "hv" } },
+    { x: d.t, y: d.det_p, name: "protein p (average)", mode: "lines", line: { color: protein, width: 2.5, dash: "dash" } },
+    { x: d.t, y: d.m, name: "mRNA m (simulated)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 1, shape: "hv" }, opacity: 0.7 },
+    { x: d.t, y: d.det_m, name: "mRNA m (average)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 2, dash: "dash" } },
+  ];
+  const axis = { gridcolor: grid, zerolinecolor: grid, linecolor: grid, color: muted };
+  const layout = {
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { color: text },
+    margin: { l: 60, r: 60, t: 20, b: 50 },
+    xaxis: { ...axis, title: "time" },
+    yaxis: { ...axis, title: { text: "protein molecules", font: { color: protein } }, rangemode: "tozero" },
+    yaxis2: { ...axis, title: { text: "mRNA molecules", font: { color: mrna } }, overlaying: "y", side: "right",
+              rangemode: "tozero", showgrid: false },
+    legend: { orientation: "h", y: 1.02, yanchor: "bottom", x: 0 },
+    hovermode: "x unified",
+  };
+  Plotly.react("graph", traces, layout, { responsive: true, displaylogo: false });
+
+  const fmt = v => v == null ? "—" : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3));
+  if (d.theory) {
+    readout.innerHTML = `Steady state: <span>mean mRNA <b>${fmt(d.theory.mean_m)}</b></span>
+      <span>mean protein <b>${fmt(d.theory.mean_p)}</b></span>
+      <span>protein noise (Fano = variance/mean) <b>${fmt(d.theory.fano_p)}</b> = 1 + β/(γₘ+γₚ)</span>`;
+  } else {
+    readout.innerHTML = `With feedback: average protein settles at <b>${fmt(d.det_p[d.det_p.length - 1])}</b>
+      (no closed-form noise formula; compare the wiggles to the run without feedback)`;
+  }
+}
+
+update();
+</script>
+</body>
+</html>

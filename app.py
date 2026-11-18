@@ -10,6 +10,7 @@ Endpoints (all return JSON):
     POST /api/steady-state       Levels 1-3: h_i, r(x), m*, p*   (same as interactive.py)
     POST /api/rate-curve         r(x) while one TF's x is swept   (for plotting)
     POST /api/gillespie          one stochastic trajectory m(t), p(t)
+    POST /api/time-course        trajectory + deterministic m(t), p(t) (for the web page)
     POST /api/gillespie-stats    time-weighted mean / variance / Fano of m and p
     POST /api/cascade            mean and Fano of each protein in a gene cascade
 
@@ -29,7 +30,7 @@ from typing import List, Literal, Optional  # noqa: E402  (must follow the env s
 
 import numpy as np  # noqa: E402
 from fastapi import FastAPI, Request  # noqa: E402
-from fastapi.responses import JSONResponse, RedirectResponse  # noqa: E402
+from fastapi.responses import HTMLResponse, JSONResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from cascade import cascade_stats  # noqa: E402
@@ -39,7 +40,9 @@ from gene_expression import (  # noqa: E402
     R_MAX,
     REPRESSOR,
     hill,
+    mrna_derivative,
     mrna_steady_state,
+    protein_derivative,
     protein_steady_state,
     transcription_rate,
 )
@@ -49,6 +52,9 @@ from gillespie import gillespie, steady_state_stats  # noqa: E402
 MAX_CURVE_POINTS = 2000
 MAX_TRAJECTORY_POINTS = 5000
 MAX_CASCADE_GENES = 10
+MAX_ODE_STEPS = 50_000
+
+PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
 
 app = FastAPI(title="Gene expression simulator")
 
@@ -163,8 +169,9 @@ def _theory(r, gamma_m, beta, gamma_p):
 
 @app.get("/", include_in_schema=False)
 def home():
-    """Until the web page exists, send visitors to the interactive API docs."""
-    return RedirectResponse("/docs")
+    """The interactive graphing page (static/index.html)."""
+    with open(PAGE, encoding="utf-8") as f:
+        return HTMLResponse(f.read())
 
 
 @app.get("/api/health")
@@ -215,6 +222,60 @@ def gillespie_trajectory(req: GillespieRequest):
                               autorepression=_autorepression_tuple(req.autorepression),
                               n_points=req.n_points)
     return {"t": _nums(times), "m": _nums(ms), "p": _nums(ps)}
+
+
+def _deterministic(r, gamma_m, beta, gamma_p, times, m0, p0, autorepression):
+    """Integrate dm/dt and dp/dt (gene_expression.py) with RK4, recording at times.
+
+    With autorepression the rate is the Level 1 repressor formula with x = p:
+    r(p) = transcription_rate([(p, K, n, repressor)], r_max=r, r_basal=r_basal).
+    """
+    def rate(p):
+        if autorepression is None:
+            return r
+        return transcription_rate([(p, autorepression.K, autorepression.n, REPRESSOR)],
+                                  r_max=r, r_basal=autorepression.r_basal)
+
+    def deriv(m, p):
+        m, p = max(m, 0.0), max(p, 0.0)
+        return (mrna_derivative(m, rate(p), gamma_m),
+                protein_derivative(p, m, beta, gamma_p))
+
+    interval = times[1] - times[0]
+    # about 20 steps per decay time keeps RK4 accurate; cap the total work
+    per_interval = math.ceil(interval * max(gamma_m, gamma_p, 1e-12) * 20)
+    per_interval = max(1, min(per_interval, MAX_ODE_STEPS // (len(times) - 1)))
+    h = interval / per_interval
+    m, p = float(m0), float(p0)
+    ms, ps = [m], [p]
+    for _ in range(len(times) - 1):
+        for _ in range(per_interval):
+            k1 = deriv(m, p)
+            k2 = deriv(m + h / 2 * k1[0], p + h / 2 * k1[1])
+            k3 = deriv(m + h / 2 * k2[0], p + h / 2 * k2[1])
+            k4 = deriv(m + h * k3[0], p + h * k3[1])
+            m += h / 6 * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0])
+            p += h / 6 * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1])
+        ms.append(m)
+        ps.append(p)
+    return ms, ps
+
+
+@app.post("/api/time-course")
+def time_course(req: GillespieRequest):
+    """Everything the graphing page needs: one stochastic run, the deterministic
+    curves from the same starting point, and (without feedback) the theory."""
+    times, ms, ps = gillespie(req.r, req.gamma_m, req.beta, req.gamma_p, req.t_max,
+                              m0=req.m0, p0=req.p0, seed=req.seed,
+                              autorepression=_autorepression_tuple(req.autorepression),
+                              n_points=req.n_points)
+    det_m, det_p = _deterministic(req.r, req.gamma_m, req.beta, req.gamma_p, times,
+                                  req.m0, req.p0, req.autorepression)
+    result = {"t": _nums(times), "m": _nums(ms), "p": _nums(ps),
+              "det_m": _nums(det_m), "det_p": _nums(det_p)}
+    if req.autorepression is None and req.gamma_m > 0 and req.gamma_p > 0:
+        result["theory"] = _theory(req.r, req.gamma_m, req.beta, req.gamma_p)
+    return result
 
 
 @app.post("/api/gillespie-stats")
