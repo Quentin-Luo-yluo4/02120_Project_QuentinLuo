@@ -16,6 +16,10 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/save_journal.py\" || python \"$CLAUDE_PROJECT_DIR/.claude/hooks/save_journal.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/sync_memory.py\" || python \"$CLAUDE_PROJECT_DIR/.claude/hooks/sync_memory.py\""
           }
         ]
       }
