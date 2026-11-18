@@ -1,0 +1,3 @@
+- [User profile](user-profile.md) — CMU 02-120 student; Python science project; new to deployment/git auth
+- [Vercel requirement](vercel-deployment-requirement.md) — instructor requires Vercel; FastAPI + Plotly page plan; local-first workflow
+- [Deployment status 2026-11-18](deployment-status-2026-11-18.md) — API pushed; Vercel import pending (token route offered); front end next
