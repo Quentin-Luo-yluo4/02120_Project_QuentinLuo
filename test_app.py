@@ -12,6 +12,7 @@ Needs: fastapi, httpx, uvicorn (pip install -r requirements.txt httpx uvicorn).
 """
 
 import json
+import math
 import os
 import socket
 import subprocess
@@ -185,6 +186,74 @@ class TestTimeCourse(unittest.TestCase):
         self.assertNotIn("theory", data)
 
 
+class TestParameterUpload(unittest.TestCase):
+    """/api/parse-parameters: the page's "Load from text file" button."""
+
+    def test_returns_parsed_values_and_feedback_flag(self):
+        data = post_ok(self, "/api/parse-parameters", {"text": "r = 2\nbeta = 5\n"})
+        self.assertEqual(data, {"values": {"r": 2.0, "beta": 5.0}, "feedback": None})
+        data = post_ok(self, "/api/parse-parameters", {"text": "feedback = 0"})
+        self.assertIs(data["feedback"], False)
+        data = post_ok(self, "/api/parse-parameters", {"text": "K = 100\nn = 2"})
+        self.assertTrue(data["feedback"])
+
+    def test_bad_file_gives_400_with_line_number(self):
+        response = client.post("/api/parse-parameters", json={"text": "r = 1\nbogus = 2"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("line 2", response.json()["error"])
+
+    def test_size_cap(self):
+        response = client.post("/api/parse-parameters", json={"text": "#" * 10_001})
+        self.assertEqual(response.status_code, 422)
+
+    def test_page_has_upload_button(self):
+        self.assertIn("/api/parse-parameters", client.get("/").text)
+
+
+class TestNoiseCheck(unittest.TestCase):
+    """/api/noise-check: measured protein noise vs the paper's formula."""
+
+    LN2 = math.log(2)
+    PAPER = {"r": 0.01, "gamma_m": LN2 / 120, "beta": 20 * LN2 / 120, "gamma_p": LN2 / 3600}
+
+    def test_paper_parameters_match_eq1(self):
+        data = post_ok(self, "/api/noise-check", self.PAPER)
+        self.assertEqual(data["formula"], "Eq. 1")
+        self.assertAlmostEqual(data["fano"]["paper"], 20.3548, places=3)
+        self.assertTrue(data["fano"]["match"], data)
+        self.assertTrue(data["mean"]["match"], data)
+        self.assertLess(data["fano"]["se"], 0.5)  # runs are long enough to be informative
+
+    def test_feedback_uses_eq3(self):
+        body = dict(self.PAPER, r=1200 * self.LN2 / 3600 / 10, beta=10 * self.LN2 / 120,
+                    autorepression={"K": 800, "n": 2, "r_basal": 0})
+        data = post_ok(self, "/api/noise-check", body)
+        self.assertEqual(data["formula"], "Eq. 3")
+        self.assertAlmostEqual(data["fano"]["paper"], 5.781, places=3)
+        self.assertTrue(data["fano"]["match"], data)
+
+    def test_same_seed_same_answer(self):
+        a = post_ok(self, "/api/noise-check", dict(self.PAPER, seed=5))
+        b = post_ok(self, "/api/noise-check", dict(self.PAPER, seed=5))
+        self.assertEqual(a, b)
+
+    def test_formulas_not_applicable(self):
+        for change in ({"gamma_p": 0}, {"r": 0}, {"beta": 0}):
+            with self.subTest(change):
+                response = client.post("/api/noise-check", json=dict(self.PAPER, **change))
+                self.assertEqual(response.status_code, 400)
+
+    def test_too_fast_to_measure(self):
+        response = client.post("/api/noise-check", json={"r": 1e6, "gamma_m": 1, "beta": 1e3, "gamma_p": 1})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("too fast", response.json()["error"])
+
+    def test_page_has_compare_and_noise_check(self):
+        page = client.get("/").text
+        self.assertIn("/api/noise-check", page)
+        self.assertIn("Keep this run", page)
+
+
 class TestBehaviour(unittest.TestCase):
     """Correct answers, error handling, and limits."""
 
@@ -320,7 +389,8 @@ class TestBehaviour(unittest.TestCase):
         paths = set(client.get("/openapi.json").json()["paths"])
         self.assertEqual(paths, {"/api/health", "/api/steady-state", "/api/rate-curve",
                                  "/api/gillespie", "/api/gillespie-stats", "/api/cascade",
-                                 "/api/time-course"})
+                                 "/api/time-course", "/api/parse-parameters",
+                                 "/api/noise-check"})
 
 
 def _free_port():

@@ -8,12 +8,12 @@
 <style>
   :root {
     --bg: #ffffff; --panel: #f6f7f9; --border: #dfe2e7; --text: #1d2330; --muted: #6b7280;
-    --accent: #2d70b3; --protein: #2d70b3; --mrna: #c74440; --error: #b42318;
+    --accent: #2d70b3; --protein: #2d70b3; --mrna: #c74440; --error: #b42318; --ok: #1f7a4d;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #15181e; --panel: #1d2129; --border: #2e3440; --text: #e6e8ec; --muted: #9aa3b2;
-      --accent: #6aa7e8; --protein: #6aa7e8; --mrna: #ef7c78; --error: #f38b80;
+      --accent: #6aa7e8; --protein: #6aa7e8; --mrna: #ef7c78; --error: #f38b80; --ok: #5cc493;
     }
   }
   * { box-sizing: border-box; }
@@ -33,6 +33,8 @@
   .row input[type=number]:focus { outline: 2px solid var(--accent); border-color: transparent; }
   .row input[type=range] { width: 100%; margin-top: 6px; accent-color: var(--accent); }
   .row .hint { color: var(--muted); font-size: 12px; }
+  .row.hint code { font-size: 12px; }
+  .row.hint .err { color: var(--error); }
   .row.bad input[type=number] { border-color: var(--error); }
   .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .feedback[hidden] { display: none; }
@@ -46,6 +48,11 @@
     display: flex; gap: 18px; flex-wrap: wrap; min-height: 36px; align-items: center; }
   .readout b { color: var(--text); font-weight: 600; }
   .readout .err { color: var(--error); }
+  .readout .ok { color: var(--ok); font-weight: 600; }
+  .readout .miss { color: var(--error); font-weight: 600; }
+  #noise { border-top: 0; padding-top: 0; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
   @media (max-width: 760px) {
     .app { flex-direction: column; height: auto; }
     aside { width: 100%; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -68,11 +75,24 @@
     <div class="buttons">
       <button id="reroll" title="Run the stochastic simulation again with new random numbers">New random run</button>
       <button id="reset">Reset values</button>
+      <button id="load" title="A .txt file with one 'name = value' per line, e.g. r = 1">Load from text file</button>
+      <input type="file" id="file" accept=".txt,text/plain" hidden>
     </div>
+    <div class="buttons">
+      <button id="keep" title="Freeze the current protein curve in its own colour so the next run is drawn on the same axes">Keep this run</button>
+      <button id="clear" disabled>Clear kept runs</button>
+    </div>
+    <div class="row hint" id="keptlist">Compare mode: press <b>Keep this run</b>, change a value, and both
+      runs are drawn on the same axes. Up to 4 kept runs.</div>
+    <div class="row hint" id="loadmsg">File format: one <code>name = value</code> per line, e.g.
+      <code>r = 1</code>. Names: r, gamma_m, beta, gamma_p, t_max, and for feedback K, n, r_basal
+      (<code>feedback = 0</code> or <code>1</code> turns it off or on).
+      Lines starting with # are ignored.</div>
   </aside>
   <main>
     <div id="graph"></div>
     <div class="readout" id="readout"></div>
+    <div class="readout" id="noise"></div>
   </main>
 </div>
 <script>
@@ -122,16 +142,73 @@ document.getElementById("reset").addEventListener("click", () => {
   schedule(0);
 });
 
+const fileInput = document.getElementById("file");
+const loadmsg = document.getElementById("loadmsg");
+document.getElementById("load").addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", async () => {
+  const file = fileInput.files[0];
+  fileInput.value = "";  // so choosing the same file again still triggers a load
+  if (!file) return;
+  let res, data;
+  try {
+    res = await fetch("/api/parse-parameters", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: await file.text() }) });
+    data = await res.json();
+  } catch (e) {
+    loadmsg.innerHTML = `<span class="err">Could not read ${escapeHtml(file.name)}.</span>`;
+    return;
+  }
+  if (!res.ok) {
+    const msg = data.error || (data.detail && data.detail[0] && data.detail[0].msg) || "Invalid file";
+    loadmsg.innerHTML = `<span class="err">${escapeHtml(file.name)}: ${escapeHtml(msg)}</span>`;
+    return;
+  }
+  for (const [name, v] of Object.entries(data.values)) {
+    if (!(name in inputs)) continue;  // "feedback" is the checkbox, handled below
+    const slider = inputs[name].slider;
+    // widen the slider if the file's value is outside its range (e.g. the paper's
+    // rates in per-second units are far smaller than the default slider range)
+    if (v < Number(slider.min)) { slider.min = v; slider.step = "any"; }
+    if (v > Number(slider.max)) { slider.max = v; slider.step = "any"; }
+    inputs[name].num.value = v;
+    slider.value = v;
+  }
+  if (data.feedback !== null) {  // null: the file doesn't say, so leave the box as it is
+    fb.checked = data.feedback;
+    document.getElementById("fbparams").hidden = !fb.checked;
+  }
+  loadmsg.textContent = `Loaded ${Object.keys(data.values).length} value(s) from ${file.name}: ` +
+    Object.entries(data.values).map(([k, v]) => `${k} = ${v}`).join(", ");
+  schedule(0);
+});
+
+function escapeHtml(t) {
+  return String(t).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const readout = document.getElementById("readout");
+const noiseOut = document.getElementById("noise");
+const fmt = v => v == null ? "—" : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3));
+const errorText = data => data.error || (data.detail && data.detail[0] && data.detail[0].msg) || "Invalid input";
 
-let timer = null, requestId = 0;
+let timer = null, requestId = 0, noiseId = 0;
 function schedule(delay = 200) { clearTimeout(timer); timer = setTimeout(update, delay); }
 
 function value(name) {
   const t = inputs[name].num.value.trim();
   return t === "" ? NaN : Number(t);
 }
+
+async function postJson(path, body) {
+  const res = await fetch(path, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return [res, await res.json()];
+}
+
+// ---------- the current run ----------
+
+let current = null;  // { body, data, noise } of what is on screen now
 
 async function update() {
   const body = { seed, n_points: 1001 };
@@ -141,60 +218,151 @@ async function update() {
   for (const name of used) {
     if (!Number.isFinite(value(name))) { inputs[name].row.classList.add("bad"); ok = false; }
   }
-  if (!ok) { readout.innerHTML = `<span class="err">Enter a number in every box.</span>`; return; }
+  if (!ok) {
+    readout.innerHTML = `<span class="err">Enter a number in every box.</span>`;
+    noiseOut.textContent = "";
+    return;
+  }
   for (const [name] of PARAMS) body[name] = value(name);
   if (fb.checked) body.autorepression = { K: value("K"), n: value("n"), r_basal: value("r_basal") };
 
   const id = ++requestId;
   let res, data;
   try {
-    res = await fetch("/api/time-course", { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    data = await res.json();
+    [res, data] = await postJson("/api/time-course", body);
   } catch (e) {
     if (id === requestId) readout.innerHTML = `<span class="err">Could not reach the server.</span>`;
     return;
   }
   if (id !== requestId) return; // a newer request has been sent; ignore this one
   if (!res.ok) {
-    const msg = data.error || (data.detail && data.detail[0] && data.detail[0].msg) || "Invalid input";
-    readout.innerHTML = `<span class="err">${msg}</span>`;
+    readout.innerHTML = `<span class="err">${escapeHtml(errorText(data))}</span>`;
+    noiseOut.textContent = "";
     return;
   }
-  draw(data, body);
+  current = { body, data, noise: null };
+  draw();
+  showTheory(data);
+  checkNoise(body);
 }
 
-function draw(d, body) {
+function showTheory(d) {
+  if (d.theory) {
+    readout.innerHTML = `Paper's Eq. 1: <span>mean mRNA <b>${fmt(d.theory.mean_m)}</b></span>
+      <span>mean protein <b>${fmt(d.theory.mean_p)}</b></span>
+      <span>protein noise (Fano = variance/mean) <b>${fmt(d.theory.fano_p)}</b> = 1 + β/(γₘ+γₚ)</span>`;
+  } else {
+    readout.innerHTML = `With feedback: the average protein level settles at <b>${fmt(d.det_p[d.det_p.length - 1])}</b>`;
+  }
+}
+
+// ---------- measured noise vs the paper ----------
+
+async function checkNoise(body) {
+  const id = ++noiseId;
+  const req = { r: body.r, gamma_m: body.gamma_m, beta: body.beta, gamma_p: body.gamma_p, seed: body.seed };
+  if (body.autorepression) req.autorepression = body.autorepression;
+  noiseOut.innerHTML = `Measuring noise from 8 long runs…`;
+  let res, data;
+  try {
+    [res, data] = await postJson("/api/noise-check", req);
+  } catch (e) {
+    if (id === noiseId) noiseOut.innerHTML = `<span class="err">Noise check: could not reach the server.</span>`;
+    return;
+  }
+  if (id !== noiseId) return;
+  if (!res.ok) {
+    noiseOut.innerHTML = `Noise check not available: ${escapeHtml(errorText(data))}`;
+    return;
+  }
+  if (current) current.noise = data;
+  const mark = x => x.match ? `<span class="ok">✓ match</span>` : `<span class="miss">✗ outside 3 SE</span>`;
+  const line = (label, x) => `<span>${label}: simulated <b>${fmt(x.simulated)} ± ${fmt(x.se)}</b>,
+    paper ${fmt(x.paper)} ${mark(x)}</span>`;
+  let note = "";
+  if (data.formula === "Eq. 3" && !(data.fano.match && data.mean.match)) {
+    note = `<span>Eq. 3 is a small-fluctuation approximation, so the paper's formula is expected
+      to drift from the simulation for steep feedback (large n) or strong repression.</span>`;
+  }
+  noiseOut.innerHTML = `Measured (${data.runs} runs × ${Math.round(data.lifetimes_per_run)} protein lifetimes)
+    vs paper's ${data.formula}: ${line("Fano", data.fano)} ${line("mean protein", data.mean)} ${note}`;
+  updateKeptList();
+}
+
+// ---------- compare mode: kept runs ----------
+
+const KEPT_COLORS = ["#8a8f98", "#c98a1b", "#2f9e6a", "#9b6bd1"];
+const MAX_KEPT = 4;
+let kept = [];
+const keepBtn = document.getElementById("keep"), clearBtn = document.getElementById("clear");
+const keptList = document.getElementById("keptlist");
+const keptHint = keptList.innerHTML;
+
+function describe(body) {
+  const b = body.beta / body.gamma_m;
+  let s = `r = ${fmt(body.r)}, b = β/γₘ = ${fmt(b)}, γₚ = ${fmt(body.gamma_p)}`;
+  if (body.autorepression) s += `, feedback K = ${fmt(body.autorepression.K)}, n = ${fmt(body.autorepression.n)}`;
+  return s;
+}
+
+keepBtn.addEventListener("click", () => {
+  if (!current) return;
+  if (kept.length >= MAX_KEPT) kept.shift();
+  const used = new Set(kept.map(k => k.color));
+  const color = KEPT_COLORS.find(c => !used.has(c));
+  kept.push({ ...current, color, label: `kept ${describe(current.body)}` });
+  draw();
+  updateKeptList();
+});
+clearBtn.addEventListener("click", () => { kept = []; draw(); updateKeptList(); });
+
+function updateKeptList() {
+  clearBtn.disabled = kept.length === 0;
+  if (kept.length === 0) { keptList.innerHTML = keptHint; return; }
+  keptList.innerHTML = kept.map(k => {
+    const n = k.noise ? ` — Fano ${fmt(k.noise.fano.simulated)} (paper ${fmt(k.noise.fano.paper)})` : "";
+    return `<div><span class="swatch" style="background:${k.color}"></span>${escapeHtml(describe(k.body))}${n}</div>`;
+  }).join("");
+}
+
+// ---------- drawing ----------
+
+function draw() {
+  if (!current) return;
+  const d = current.data;
   const protein = css("--protein"), mrna = css("--mrna"), text = css("--text"),
         muted = css("--muted"), grid = css("--border");
-  const traces = [
+  const traces = [];
+  kept.forEach((k, i) => {
+    traces.push(
+      { x: k.data.t, y: k.data.p, name: `kept ${i + 1} (simulated)`, legendgroup: `k${i}`, mode: "lines",
+        line: { color: k.color, width: 1, shape: "hv" }, opacity: 0.8, hovertext: k.label },
+      { x: k.data.t, y: k.data.det_p, name: `kept ${i + 1} (average)`, legendgroup: `k${i}`, mode: "lines",
+        line: { color: k.color, width: 2, dash: "dash" }, showlegend: false });
+  });
+  const compare = kept.length > 0;
+  traces.push(
     { x: d.t, y: d.p, name: "protein p (simulated)", mode: "lines", line: { color: protein, width: 1.2, shape: "hv" } },
-    { x: d.t, y: d.det_p, name: "protein p (average)", mode: "lines", line: { color: protein, width: 2.5, dash: "dash" } },
-    { x: d.t, y: d.m, name: "mRNA m (simulated)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 1, shape: "hv" }, opacity: 0.7 },
-    { x: d.t, y: d.det_m, name: "mRNA m (average)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 2, dash: "dash" } },
-  ];
+    { x: d.t, y: d.det_p, name: "protein p (average)", mode: "lines", line: { color: protein, width: 2.5, dash: "dash" } });
+  if (!compare) {  // mRNA is hidden in compare mode to keep the picture readable
+    traces.push(
+      { x: d.t, y: d.m, name: "mRNA m (simulated)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 1, shape: "hv" }, opacity: 0.7 },
+      { x: d.t, y: d.det_m, name: "mRNA m (average)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 2, dash: "dash" } });
+  }
   const axis = { gridcolor: grid, zerolinecolor: grid, linecolor: grid, color: muted };
   const layout = {
     paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { color: text },
     margin: { l: 60, r: 60, t: 20, b: 50 },
     xaxis: { ...axis, title: "time" },
     yaxis: { ...axis, title: { text: "protein molecules", font: { color: protein } }, rangemode: "tozero" },
-    yaxis2: { ...axis, title: { text: "mRNA molecules", font: { color: mrna } }, overlaying: "y", side: "right",
-              rangemode: "tozero", showgrid: false },
     legend: { orientation: "h", y: 1.02, yanchor: "bottom", x: 0 },
     hovermode: "x unified",
   };
-  Plotly.react("graph", traces, layout, { responsive: true, displaylogo: false });
-
-  const fmt = v => v == null ? "—" : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3));
-  if (d.theory) {
-    readout.innerHTML = `Steady state: <span>mean mRNA <b>${fmt(d.theory.mean_m)}</b></span>
-      <span>mean protein <b>${fmt(d.theory.mean_p)}</b></span>
-      <span>protein noise (Fano = variance/mean) <b>${fmt(d.theory.fano_p)}</b> = 1 + β/(γₘ+γₚ)</span>`;
-  } else {
-    readout.innerHTML = `With feedback: average protein settles at <b>${fmt(d.det_p[d.det_p.length - 1])}</b>
-      (no closed-form noise formula; compare the wiggles to the run without feedback)`;
+  if (!compare) {
+    layout.yaxis2 = { ...axis, title: { text: "mRNA molecules", font: { color: mrna } }, overlaying: "y",
+                      side: "right", rangemode: "tozero", showgrid: false };
   }
+  Plotly.react("graph", traces, layout, { responsive: true, displaylogo: false });
 }
 
 update();

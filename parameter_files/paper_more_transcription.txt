@@ -1,0 +1,16 @@
+# Thattai & van Oudenaarden 2001 — Conclusion 2: the transcription rate changes how much
+# protein there is but not the Fano factor.
+# Compare with paper_parameters.txt (k_R = 0.01 per s): transcription doubled, b = 20 kept.
+#
+#   -> mean protein doubles:   1039 -> 2077
+#   -> Fano factor unchanged:  20.35 (it depends only on b and eta)
+#   -> wiggle (SD) grows less than the mean: 145 -> 206, so relative noise falls 14% -> 10%
+#
+# How to use: load paper_parameters.txt, press "Keep this run", then load this file.
+# Time unit: seconds.
+r = 0.02
+gamma_m = 0.0057762265
+beta = 0.1155245301
+gamma_p = 0.0001925409
+t_max = 36000
+feedback = 0

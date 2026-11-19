@@ -1,0 +1,16 @@
+# Thattai & van Oudenaarden 2001 — Conclusion 3: negative feedback reduces noise.
+# The fair comparison for paper_feedback_parameters.txt: the same gene WITHOUT feedback,
+# with its transcription rate turned down so it makes the same average amount of protein.
+#
+#   k_R = 689 * gamma_p / b = 0.013266 per s   (b = 10, as in the feedback file)
+#   -> mean protein 689, same as with feedback
+#   -> Fano factor 10.68 and SD 86      vs  5.78 and SD 63 with feedback (Eq. 3)
+#
+# How to use: load this file, press "Keep this run", then load paper_feedback_parameters.txt.
+# Time unit: seconds.
+r = 0.0132656679
+gamma_m = 0.0057762265
+beta = 0.0577622650
+gamma_p = 0.0001925409
+t_max = 36000
+feedback = 0

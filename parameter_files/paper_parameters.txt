@@ -1,0 +1,20 @@
+# Thattai & van Oudenaarden 2001, PNAS 98:8614 — parameters from the Fig. 1 and Fig. 2 captions.
+# Time unit: seconds. Upload with the page's "Load from text file" button.
+#
+# Paper's values            -> this file
+#   k_R = 0.01 per s        -> r       (transcription rate)
+#   mRNA half-life 120 s    -> gamma_m = ln2 / 120
+#   burst size b = 20       -> beta    = b * gamma_m   (proteins per mRNA = beta / gamma_m)
+#   protein half-life 1 h   -> gamma_p = ln2 / 3600
+#
+# Paper's Eq. 1 predicts: mean protein = k_R * b / gamma_p = 1039
+#                         Fano factor  = b / (1 + gamma_p/gamma_m) + 1 = 20.35
+r = 0.01
+gamma_m = 0.0057762265
+beta = 0.1155245301
+gamma_p = 0.0001925409
+
+# 10 protein half-lives, which the paper uses as the time to reach steady state
+# (Fig. 2 itself only follows the first 5000 s after the gene switches on).
+t_max = 36000
+feedback = 0

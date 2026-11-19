@@ -1,0 +1,22 @@
+# Thattai & van Oudenaarden 2001, PNAS 98:8614 — autoregulation (Fig. 3b / Fig. 4).
+# Time unit: seconds. Upload with the page's "Load from text file" button.
+#
+# Paper's values                        -> this file
+#   unrepressed mean 1200, b = 10       -> r = k_R_max = 1200 * gamma_p / b
+#   mRNA half-life 2 min                -> gamma_m = ln2 / 120
+#   b = 10                              -> beta    = b * gamma_m
+#   protein half-life 1 h               -> gamma_p = ln2 / 3600
+#   K_d = 800, n = 2 (one point on the Fig. 3b curve; Fig. 4's caption doesn't give K_d)
+#
+# Paper's Eq. 3 predicts: mean protein 689, Fano factor 5.78
+# (for the fair no-feedback comparison at the same mean, see paper_no_feedback_same_mean.txt)
+r = 0.0231049060
+gamma_m = 0.0057762265
+beta = 0.0577622650
+gamma_p = 0.0001925409
+t_max = 36000
+
+feedback = 1
+K = 800
+n = 2
+r_basal = 0

@@ -11,6 +11,8 @@ Endpoints (all return JSON):
     POST /api/rate-curve         r(x) while one TF's x is swept   (for plotting)
     POST /api/gillespie          one stochastic trajectory m(t), p(t)
     POST /api/time-course        trajectory + deterministic m(t), p(t) (for the web page)
+    POST /api/parse-parameters   read "name = value" lines from an uploaded text file
+    POST /api/noise-check        measured protein mean/Fano (several long runs) vs the paper
     POST /api/gillespie-stats    time-weighted mean / variance / Fano of m and p
     POST /api/cascade            mean and Fano of each protein in a gene cascade
 
@@ -47,12 +49,24 @@ from gene_expression import (  # noqa: E402
     transcription_rate,
 )
 from gillespie import gillespie, steady_state_stats  # noqa: E402
+from noise_theory import predict  # noqa: E402
+from parameter_file import parse_parameters, uses_feedback  # noqa: E402
 
 # Caps that keep one request inside Vercel's time and 4.5 MB response limits.
 MAX_CURVE_POINTS = 2000
 MAX_TRAJECTORY_POINTS = 5000
 MAX_CASCADE_GENES = 10
 MAX_ODE_STEPS = 50_000
+MAX_PARAMETER_FILE_CHARS = 10_000
+
+# /api/noise-check: like replicate_figures.py, several independent long runs give a
+# mean and a standard error (SE); a result "matches" if within MATCH_SE of the paper.
+NOISE_RUNS = 8
+NOISE_BURN_LIFETIMES = 10      # paper: steady state after ~10 protein half-lives
+NOISE_MAX_LIFETIMES = 2000     # length of each run, in protein lifetimes 1/gamma_p ...
+NOISE_EVENT_BUDGET = 3e7       # ... shortened so all runs together stay under ~0.5 s
+NOISE_MIN_LIFETIMES = 20       # below this the estimate is meaningless; refuse
+MATCH_SE = 3
 
 PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
 
@@ -149,6 +163,19 @@ class CascadeRequest(BaseModel):
     t_max: float
     t_burn: float
     seed: int = 0
+
+
+class NoiseCheckRequest(BaseModel):
+    r: float
+    gamma_m: float
+    beta: float
+    gamma_p: float
+    autorepression: Optional[Autorepression] = None
+    seed: int = 0
+
+
+class ParameterFileRequest(BaseModel):
+    text: str = Field(max_length=MAX_PARAMETER_FILE_CHARS)
 
 
 def _autorepression_tuple(a):
@@ -276,6 +303,53 @@ def time_course(req: GillespieRequest):
     if req.autorepression is None and req.gamma_m > 0 and req.gamma_p > 0:
         result["theory"] = _theory(req.r, req.gamma_m, req.beta, req.gamma_p)
     return result
+
+
+@app.post("/api/parse-parameters")
+def parse_parameter_file(req: ParameterFileRequest):
+    """The page sends the uploaded file's text; the rules are in parameter_file.py."""
+    values = parse_parameters(req.text)
+    return {"values": values, "feedback": uses_feedback(values)}
+
+
+@app.post("/api/noise-check")
+def noise_check(req: NoiseCheckRequest):
+    """Measure the steady-state protein mean and Fano factor from NOISE_RUNS long
+    runs and compare them with the paper's Eq. 1 (or Eq. 3 with feedback)."""
+    autorep = _autorepression_tuple(req.autorepression)
+    theory = predict(req.r, req.gamma_m, req.beta, req.gamma_p, autorep)
+    if theory is None:
+        raise ValueError("the paper's formulas need r, beta, gamma_m and gamma_p all > 0")
+
+    # events per protein lifetime ~ 2 * r * (1 + b) / gamma_p (every molecule made
+    # is also destroyed); pick the longest run that fits the budget
+    b = req.beta / req.gamma_m
+    events_per_lifetime = 2 * req.r * (1 + b) / req.gamma_p
+    lifetimes = min(NOISE_MAX_LIFETIMES,
+                    NOISE_EVENT_BUDGET / (NOISE_RUNS * max(events_per_lifetime, 1e-12)))
+    if lifetimes < NOISE_MIN_LIFETIMES:
+        raise ValueError("these rates are too fast to measure the noise quickly; "
+                         "try smaller r or beta")
+    t_burn = NOISE_BURN_LIFETIMES / req.gamma_p
+    t_max = t_burn + lifetimes / req.gamma_p
+
+    means, fanos = [], []
+    for k in range(NOISE_RUNS):
+        s = steady_state_stats(req.r, req.gamma_m, req.beta, req.gamma_p, t_max,
+                               t_burn=t_burn, seed=req.seed + k, autorepression=autorep)
+        means.append(s["mean_p"])
+        fanos.append(s["fano_p"])
+
+    def summary(values, predicted):
+        mean = float(np.mean(values))
+        se = float(np.std(values, ddof=1) / math.sqrt(len(values)))
+        return {"simulated": _num(mean), "se": _num(se), "paper": _num(predicted),
+                "match": bool(abs(mean - predicted) <= MATCH_SE * se)}
+
+    return {"mean": summary(means, theory[0]),
+            "fano": summary(fanos, theory[1]),
+            "formula": "Eq. 1" if autorep is None else "Eq. 3",
+            "runs": NOISE_RUNS, "lifetimes_per_run": _num(lifetimes)}
 
 
 @app.post("/api/gillespie-stats")
