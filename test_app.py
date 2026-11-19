@@ -36,6 +36,7 @@ from gene_expression import (
     transcription_rate,
 )
 from gillespie import gillespie, steady_state_stats
+from noise_theory import moments
 
 client = TestClient(app)
 
@@ -161,11 +162,22 @@ class TestTimeCourse(unittest.TestCase):
         self.assertAlmostEqual(data["theory"]["mean_p"], 400.0)
         self.assertAlmostEqual(data["theory"]["fano_p"], 1 + 10 / 0.55)
 
+    def test_paper_theory_band_without_feedback(self):
+        data = post_ok(self, "/api/time-course", self.BODY)
+        self.assertEqual(data["curve"], "paper")
+        t = np.array(data["t"])
+        _, mean_p, var_m, var_p = moments(1.0, 0.5, 10.0, 0.05, t)
+        np.testing.assert_allclose(data["sd_p"], np.sqrt(var_p), rtol=1e-12)
+        np.testing.assert_allclose(data["sd_m"], np.sqrt(var_m), rtol=1e-12)
+        self.assertEqual(data["sd_p"][0], 0.0)  # every cell starts with no molecules
+
     def test_feedback_settles_at_self_consistent_level(self):
         body = dict(self.BODY, t_max=400.0,
                     autorepression={"K": 100.0, "n": 2.0, "r_basal": 0.0})
         data = post_ok(self, "/api/time-course", body)
         self.assertNotIn("theory", data)
+        self.assertEqual(data["curve"], "deterministic")
+        self.assertIsNone(data["sd_p"])
         p = data["det_p"][-1]
         r_of_p = transcription_rate([(p, 100.0, 2.0, REPRESSOR)], r_max=1.0, r_basal=0.0)
         # at the fixed point p = beta * r(p) / (gamma_m * gamma_p)
@@ -252,6 +264,7 @@ class TestNoiseCheck(unittest.TestCase):
         page = client.get("/").text
         self.assertIn("/api/noise-check", page)
         self.assertIn("Keep this run", page)
+        self.assertIn("Show Thattai et al. predicted curve", page)
 
 
 class TestBehaviour(unittest.TestCase):

@@ -9,7 +9,8 @@ import unittest
 
 import numpy as np
 
-from noise_theory import eq1, eq3, feedback_rate, feedback_steady_state, predict
+from gillespie import gillespie
+from noise_theory import eq1, eq3, feedback_rate, feedback_steady_state, moments, predict
 
 LN2 = math.log(2)
 GM, GP = LN2 / 120, LN2 / 3600   # the paper's mRNA and protein half-lives
@@ -71,6 +72,51 @@ class TestEq3(unittest.TestCase):
         mean_nf, fano_nf = eq1(p * GP / 10, GM, 10 * GM, GP)
         self.assertAlmostEqual(mean_nf, p)
         self.assertLess(fano_fb, fano_nf)
+
+
+class TestMoments(unittest.TestCase):
+    """The paper's time-dependent theory (mean and variance over time)."""
+
+    def test_reproduces_fig2_exact_values(self):
+        # exact Fano factors printed by replicate_fig2.py (scipy LSODA, rtol 1e-10)
+        expected = {120: {100: 7.93, 500: 23.94, 1000: 30.31, 2000: 31.70, 3000: 30.50, 5000: 27.65},
+                    24: {100: 24.68, 500: 36.42, 1000: 36.28, 2000: 34.08, 3000: 31.90, 5000: 28.44}}
+        times = np.linspace(0, 5000, 101)
+        for half_life, points in expected.items():
+            gm = LN2 / half_life
+            _, mean_p, _, var_p = moments(0.01, gm, 20 * gm, GP, times)
+            for t, fano in points.items():
+                with self.subTest(half_life=half_life, t=t):
+                    k = int(t / 50)
+                    self.assertAlmostEqual(var_p[k] / mean_p[k], fano, delta=0.005)
+
+    def test_mean_matches_closed_form(self):
+        gm, gp, r, beta = 0.5, 0.05, 1.0, 10.0
+        t = np.linspace(0, 100, 201)
+        mean_m, mean_p, _, _ = moments(r, gm, beta, gp, t)
+        np.testing.assert_allclose(mean_m, r / gm * (1 - np.exp(-gm * t)), rtol=1e-6, atol=1e-9)
+        exact_p = r * beta / (gm * gp) * (1 - (gp * np.exp(-gm * t) - gm * np.exp(-gp * t)) / (gp - gm))
+        np.testing.assert_allclose(mean_p, exact_p, rtol=1e-6, atol=1e-6)
+
+    def test_long_time_limit_is_eq1(self):
+        t = np.linspace(0, 400, 101)   # 20 protein lifetimes
+        mean_m, mean_p, var_m, var_p = moments(1.0, 0.5, 10.0, 0.05, t)
+        mean, fano = eq1(1.0, 0.5, 10.0, 0.05)
+        self.assertAlmostEqual(mean_p[-1], mean, delta=1e-3 * mean)
+        self.assertAlmostEqual(var_p[-1] / mean_p[-1], fano, delta=1e-3 * fano)
+        self.assertAlmostEqual(var_m[-1] / mean_m[-1], 1.0, places=6)  # mRNA is Poisson
+
+    def test_starts_with_no_spread(self):
+        mean_m, mean_p, var_m, var_p = moments(1.0, 0.5, 10.0, 0.05, np.linspace(0, 10, 11), m0=3, p0=50)
+        self.assertEqual((mean_m[0], mean_p[0], var_m[0], var_p[0]), (3.0, 50.0, 0.0, 0.0))
+
+    def test_agrees_with_many_simulated_cells(self):
+        # 2000 independent cells at t = 20, while the noise is still building up
+        r, gm, beta, gp, t_end, cells = 1.0, 0.5, 10.0, 0.05, 20.0, 2000
+        ps = np.array([gillespie(r, gm, beta, gp, t_end, seed=k, n_points=2)[2][-1] for k in range(cells)])
+        _, mean_p, _, var_p = moments(r, gm, beta, gp, np.array([0.0, t_end]))
+        self.assertAlmostEqual(ps.mean(), mean_p[-1], delta=4 * ps.std() / math.sqrt(cells))
+        self.assertAlmostEqual(ps.var(), var_p[-1], delta=0.12 * var_p[-1])  # SE of a variance ~ 3%
 
 
 class TestPredict(unittest.TestCase):

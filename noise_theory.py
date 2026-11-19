@@ -15,10 +15,12 @@ Eq. 3 (protein represses its own gene, r(p) = r_basal + (r - r_basal) K^n / (K^n
 Eq. 3 is exact only for small fluctuations; for steep feedback (large n) or strong
 repression the simulation is somewhat noisier than Eq. 3 (see replicate_figures.py).
 
-Only numpy-free standard library math, so it runs on Vercel without scipy.
+Uses numpy but not scipy (scipy is not installed on Vercel).
 """
 
 import math
+
+import numpy as np
 
 
 def eq1(r, gamma_m, beta, gamma_p):
@@ -70,3 +72,54 @@ def predict(r, gamma_m, beta, gamma_p, autorepression=None):
         return eq1(r, gamma_m, beta, gamma_p)
     K, n, r_basal = autorepression
     return eq3(r, gamma_m, beta, gamma_p, K, n, r_basal)
+
+
+# ---------- time course: the paper's moment equations ----------
+
+def moment_derivatives(y, r, gamma_m, beta, gamma_p):
+    """Exact equations for the means and (co)variances of the linear model
+    (no feedback), from the master equation; same as exact_fano in replicate_fig2.py.
+    y = (mean m, mean p, var m, cov(m, p), var p)."""
+    m, p, vm, c, vp = y
+    return (r - gamma_m * m,
+            beta * m - gamma_p * p,
+            r + gamma_m * m - 2 * gamma_m * vm,
+            beta * vm - (gamma_m + gamma_p) * c,
+            beta * m + gamma_p * p + 2 * beta * c - 2 * gamma_p * vp)
+
+
+def moments(r, gamma_m, beta, gamma_p, times, m0=0, p0=0):
+    """Thattai et al.'s predicted mean and variance of m and p at each time in
+    `times` (evenly spaced, starting at 0), for a cell that starts with exactly
+    m0 mRNAs and p0 proteins (so both variances start at 0).
+
+    The equations are linear, y' = M y with y = (m, p, vm, c, vp, 1), so one RK4
+    step is a fixed matrix S. Taking ~20 steps per fastest decay time, the update
+    over one gap between output times is S^k, computed once and reused.
+    Returns four lists: mean_m, mean_p, var_m, var_p.
+    """
+    if len(times) < 2:
+        raise ValueError("need at least 2 time points")
+    # With r = 0 the equations are linear in y, so column i of M is the derivative
+    # at the i-th unit vector; r only adds constants (the derivative at y = 0).
+    M = np.zeros((6, 6))
+    for i, unit in enumerate(np.eye(5)):
+        M[:5, i] = moment_derivatives(unit, 0.0, gamma_m, beta, gamma_p)
+    M[:5, 5] = moment_derivatives((0.0,) * 5, r, gamma_m, beta, gamma_p)
+
+    interval = times[1] - times[0]
+    fastest = 2 * max(gamma_m, gamma_p, 1e-12)     # variances decay at up to 2 * gamma
+    steps = max(1, math.ceil(interval * fastest * 20))
+    hM = M * (interval / steps)
+    S = np.eye(6) + hM @ (np.eye(6) + hM @ (np.eye(6) / 2 + hM @ (np.eye(6) / 6 + hM / 24)))
+    step = np.linalg.matrix_power(S, steps)
+
+    y = np.array([float(m0), float(p0), 0.0, 0.0, 0.0, 1.0])
+    out = np.empty((len(times), 6))
+    out[0] = y
+    for k in range(1, len(times)):
+        y = step @ y
+        out[k] = y
+    # tiny negative values from rounding at t = 0 would break sqrt
+    return (out[:, 0].tolist(), out[:, 1].tolist(),
+            np.maximum(out[:, 2], 0.0).tolist(), np.maximum(out[:, 4], 0.0).tolist())

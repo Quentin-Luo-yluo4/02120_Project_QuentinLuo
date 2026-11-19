@@ -10,7 +10,7 @@ Endpoints (all return JSON):
     POST /api/steady-state       Levels 1-3: h_i, r(x), m*, p*   (same as interactive.py)
     POST /api/rate-curve         r(x) while one TF's x is swept   (for plotting)
     POST /api/gillespie          one stochastic trajectory m(t), p(t)
-    POST /api/time-course        trajectory + deterministic m(t), p(t) (for the web page)
+    POST /api/time-course        trajectory + predicted m(t), p(t) and spread (for the web page)
     POST /api/parse-parameters   read "name = value" lines from an uploaded text file
     POST /api/noise-check        measured protein mean/Fano (several long runs) vs the paper
     POST /api/gillespie-stats    time-weighted mean / variance / Fano of m and p
@@ -49,7 +49,7 @@ from gene_expression import (  # noqa: E402
     transcription_rate,
 )
 from gillespie import gillespie, steady_state_stats  # noqa: E402
-from noise_theory import predict  # noqa: E402
+from noise_theory import moments, predict  # noqa: E402
 from parameter_file import parse_parameters, uses_feedback  # noqa: E402
 
 # Caps that keep one request inside Vercel's time and 4.5 MB response limits.
@@ -290,16 +290,29 @@ def _deterministic(r, gamma_m, beta, gamma_p, times, m0, p0, autorepression):
 
 @app.post("/api/time-course")
 def time_course(req: GillespieRequest):
-    """Everything the graphing page needs: one stochastic run, the deterministic
-    curves from the same starting point, and (without feedback) the theory."""
+    """Everything the graphing page needs: one stochastic run plus the predicted
+    curves from the same starting point.
+
+    Without feedback the prediction is Thattai et al.'s theory: the exact mean and
+    standard deviation (sd_m, sd_p) of m and p over time, from the moment equations
+    (curve = "paper"). With feedback the paper only gives the steady state (Eq. 3),
+    so det_m / det_p are the model's deterministic equations instead and there is no
+    spread (curve = "deterministic")."""
     times, ms, ps = gillespie(req.r, req.gamma_m, req.beta, req.gamma_p, req.t_max,
                               m0=req.m0, p0=req.p0, seed=req.seed,
                               autorepression=_autorepression_tuple(req.autorepression),
                               n_points=req.n_points)
-    det_m, det_p = _deterministic(req.r, req.gamma_m, req.beta, req.gamma_p, times,
-                                  req.m0, req.p0, req.autorepression)
+    if req.autorepression is None:
+        det_m, det_p, var_m, var_p = moments(req.r, req.gamma_m, req.beta, req.gamma_p,
+                                             times, req.m0, req.p0)
+        curve, sd_m, sd_p = "paper", _nums(np.sqrt(var_m)), _nums(np.sqrt(var_p))
+    else:
+        det_m, det_p = _deterministic(req.r, req.gamma_m, req.beta, req.gamma_p, times,
+                                      req.m0, req.p0, req.autorepression)
+        curve, sd_m, sd_p = "deterministic", None, None
     result = {"t": _nums(times), "m": _nums(ms), "p": _nums(ps),
-              "det_m": _nums(det_m), "det_p": _nums(det_p)}
+              "det_m": _nums(det_m), "det_p": _nums(det_p),
+              "sd_m": sd_m, "sd_p": sd_p, "curve": curve}
     if req.autorepression is None and req.gamma_m > 0 and req.gamma_p > 0:
         result["theory"] = _theory(req.r, req.gamma_m, req.beta, req.gamma_p)
     return result

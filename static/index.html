@@ -72,6 +72,13 @@
       </label>
     </div>
     <div id="fbparams" class="feedback" hidden></div>
+    <div class="row">
+      <label class="toggle" style="font-style:normal;font-family:inherit;font-size:14px">
+        <input type="checkbox" id="theory" checked> Show Thattai et al. predicted curve
+      </label>
+      <div class="hint" id="theoryhint">Dashed line: the paper's predicted average. Shaded band: predicted
+        average ± 1 standard deviation (about two-thirds of the jagged line should fall inside).</div>
+    </div>
     <div class="buttons">
       <button id="reroll" title="Run the stochastic simulation again with new random numbers">New random run</button>
       <button id="reset">Reset values</button>
@@ -187,6 +194,13 @@ function escapeHtml(t) {
 }
 
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const showTheoryBox = document.getElementById("theory");
+showTheoryBox.addEventListener("change", () => draw());  // no new simulation needed
+
+function withAlpha(hex, alpha) {  // "#2d70b3" -> "rgba(45,112,179,alpha)"
+  const n = parseInt(hex.replace("#", ""), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
 const readout = document.getElementById("readout");
 const noiseOut = document.getElementById("noise");
 const fmt = v => v == null ? "—" : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3));
@@ -333,21 +347,44 @@ function draw() {
   const protein = css("--protein"), mrna = css("--mrna"), text = css("--text"),
         muted = css("--muted"), grid = css("--border");
   const traces = [];
+  const showPred = showTheoryBox.checked;
+  const paper = d.curve === "paper";
+  const predName = paper ? "Thattai et al. theory" : "deterministic (no paper formula)";
+  document.getElementById("theoryhint").textContent = paper
+    ? "Dashed line: the paper's predicted average. Shaded band: predicted average ± 1 standard " +
+      "deviation (about two-thirds of the jagged line should fall inside)."
+    : "With feedback the paper only predicts the steady state (Eq. 3, shown under the graph), " +
+      "so the dashed line is the model's deterministic equations and there is no band.";
   kept.forEach((k, i) => {
     traces.push(
       { x: k.data.t, y: k.data.p, name: `kept ${i + 1} (simulated)`, legendgroup: `k${i}`, mode: "lines",
         line: { color: k.color, width: 1, shape: "hv" }, opacity: 0.8, hovertext: k.label },
-      { x: k.data.t, y: k.data.det_p, name: `kept ${i + 1} (average)`, legendgroup: `k${i}`, mode: "lines",
-        line: { color: k.color, width: 2, dash: "dash" }, showlegend: false });
+      { x: k.data.t, y: k.data.det_p, name: `kept ${i + 1} (predicted average)`, legendgroup: `k${i}`, mode: "lines",
+        line: { color: k.color, width: 2, dash: "dash" }, showlegend: false, visible: showPred });
   });
   const compare = kept.length > 0;
+  if (showPred && paper) {
+    // band = mean ± 1 SD: an invisible upper edge, then the lower edge filled up to it
+    const upper = d.det_p.map((v, i) => v + d.sd_p[i]);
+    const lower = d.det_p.map((v, i) => Math.max(v - d.sd_p[i], 0));
+    traces.push(
+      { x: d.t, y: upper, mode: "lines", line: { width: 0 }, hoverinfo: "skip", showlegend: false },
+      { x: d.t, y: lower, name: "Thattai et al. theory: protein ± 1 SD", mode: "lines", line: { width: 0 },
+        fill: "tonexty", fillcolor: withAlpha(protein, 0.18), hoverinfo: "skip" });
+  }
   traces.push(
-    { x: d.t, y: d.p, name: "protein p (simulated)", mode: "lines", line: { color: protein, width: 1.2, shape: "hv" } },
-    { x: d.t, y: d.det_p, name: "protein p (average)", mode: "lines", line: { color: protein, width: 2.5, dash: "dash" } });
+    { x: d.t, y: d.p, name: "protein p (simulated)", mode: "lines", line: { color: protein, width: 1.2, shape: "hv" } });
+  if (showPred) {
+    traces.push({ x: d.t, y: d.det_p, name: `${predName}: protein average`, mode: "lines",
+                  line: { color: protein, width: 2.5, dash: "dash" } });
+  }
   if (!compare) {  // mRNA is hidden in compare mode to keep the picture readable
     traces.push(
-      { x: d.t, y: d.m, name: "mRNA m (simulated)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 1, shape: "hv" }, opacity: 0.7 },
-      { x: d.t, y: d.det_m, name: "mRNA m (average)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 2, dash: "dash" } });
+      { x: d.t, y: d.m, name: "mRNA m (simulated)", mode: "lines", yaxis: "y2", line: { color: mrna, width: 1, shape: "hv" }, opacity: 0.7 });
+    if (showPred) {
+      traces.push({ x: d.t, y: d.det_m, name: `${predName}: mRNA average`, mode: "lines", yaxis: "y2",
+                    line: { color: mrna, width: 2, dash: "dash" } });
+    }
   }
   const axis = { gridcolor: grid, zerolinecolor: grid, linecolor: grid, color: muted };
   const layout = {
